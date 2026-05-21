@@ -19,6 +19,12 @@ def extract_pdf_text(file):
         text += page.get_text("text") + "\n"
     return text
 
+def split_text_into_chunks(text, chunk_size=6000):
+    chunks = []
+    for i in range(0, len(text), chunk_size):
+        chunks.append(text[i:i + chunk_size])
+    return chunks
+
 def normalize_text(text):
     text = text.replace("\n", " ")
     text = text.replace("\t", " ")
@@ -45,9 +51,7 @@ def parse_date(text):
     return None
 
 def clean_number(value):
-    value = str(value)
-    value = value.replace(",", "")
-    value = value.replace(" ", "")
+    value = str(value).replace(",", "").replace(" ", "")
     return float(value)
 
 def to_mn(value):
@@ -68,7 +72,7 @@ def overlap_days(a_start, a_end, b_start, b_end):
     end = min(a_end, b_end)
     return max(0, (end - start).days + 1)
 
-# ---------- LAND LEASE EXTRACTION ----------
+# ---------- LAND LEASE ----------
 
 def extract_land_lease_terms(text):
     rows = []
@@ -77,14 +81,11 @@ def extract_land_lease_terms(text):
     area = extract_area(cleaned)
     escalation = extract_escalation(cleaned)
 
-    # Restrict only land lease section
     land_section = cleaned
     if "Land Lease" in cleaned and "Throughput" in cleaned:
         land_section = cleaned.split("Land Lease", 1)[1].split("Throughput", 1)[0]
 
     date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
-
-    # Finds each date-to-date AED amount, even if PDF breaks spaces
     pattern = rf"({date_regex})\s*to\s*({date_regex})\s*=\s*AED\s*([0-9][0-9,\s]*[0-9])"
 
     matches = re.finditer(pattern, land_section, re.I)
@@ -94,7 +95,6 @@ def extract_land_lease_terms(text):
         end_txt = m.group(2)
         amount_txt = m.group(3)
 
-        # stop amount if it accidentally captured too much
         amount_txt = re.split(r"\s+\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}", amount_txt)[0]
         amount_txt = re.split(r"\s+From\s+", amount_txt, flags=re.I)[0]
         amount_txt = re.split(r"\s+And\s+", amount_txt, flags=re.I)[0]
@@ -108,13 +108,12 @@ def extract_land_lease_terms(text):
 
         amount = clean_number(amount_txt)
 
-        # Detect area rate near this row
-        row_text = land_section[m.start():m.end()+80]
+        row_text = land_section[m.start():m.end()+100]
         rate_match = re.search(r"\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)", row_text, re.I)
 
         rate = 0
         charge_type = "Fixed Revenue"
-        basis = "Period fixed amount"
+        basis = "Fixed amount for specific period"
 
         if rate_match:
             rate = float(rate_match.group(1))
@@ -137,7 +136,6 @@ def extract_land_lease_terms(text):
             "Remarks": "Extracted from land lease section"
         })
 
-    # Add escalation after last land lease row
     if escalation > 0 and rows:
         last = rows[-1]
         esc_start = last["End Date"] + timedelta(days=1)
@@ -160,14 +158,14 @@ def extract_land_lease_terms(text):
 
     return rows
 
-# ---------- THROUGHPUT EXTRACTION ----------
+# ---------- THROUGHPUT ----------
 
 def extract_rate_slabs(text):
     cleaned = normalize_text(text)
 
     pattern = r"(Up to\s+[\d.]+\s*Million\s+tons?|[\d.]+\s+to\s+[\d.]+\s*Million\s+tons?)\s*[:=]\s*AED\s*([\d.]+)\s*per\s*Ton"
-
     matches = re.findall(pattern, cleaned, re.I)
+
     slabs = []
 
     for slab, rate in matches:
@@ -206,7 +204,6 @@ def extract_throughput_terms(text):
     slabs = extract_rate_slabs(cleaned)
 
     date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
-
     pattern = rf"([\d.]+)\s*Million\s+tons?\s+from\s+({date_regex})\s*to\s*({date_regex})"
 
     matches = re.findall(pattern, cleaned, re.I)
@@ -305,7 +302,8 @@ def build_quarterly_projection(terms, start_year, end_year):
                 throughput += q_value
 
             logic.append(
-                f"{term['Revenue Type']} {term['Charge Type']}: AED {to_mn(q_value)} Mn = AED {to_mn(full_value)} Mn × {days}/{total_days}"
+                f"{term['Revenue Type']} - {term['Charge Type']}: AED {to_mn(q_value)} Mn = "
+                f"AED {to_mn(full_value)} Mn × {days}/{total_days}"
             )
 
         output.append({
@@ -325,10 +323,17 @@ def build_quarterly_projection(terms, start_year, end_year):
 if uploaded_file:
     raw_text = extract_pdf_text(uploaded_file)
 
+    chunks = split_text_into_chunks(raw_text)
+
     st.success("PDF Text Extracted Successfully")
+    st.write(f"Contract split into {len(chunks)} chunks for AI reading.")
 
     with st.expander("View Extracted Contract Text"):
         st.text_area("Contract Content", raw_text, height=300)
+
+    with st.expander("View Text Chunks"):
+        for i, chunk in enumerate(chunks, start=1):
+            st.text_area(f"Chunk {i}", chunk, height=150)
 
     land_terms = extract_land_lease_terms(raw_text)
     throughput_terms, slabs = extract_throughput_terms(raw_text)

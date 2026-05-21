@@ -63,20 +63,28 @@ def extract_area(text):
 
 def extract_land_lease_terms(text):
     rows = []
-    cleaned = normalize_text(text)
-    area = extract_area(cleaned)
-    escalation = extract_escalation(cleaned)
 
-    pattern = (
-        r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
-        r"\s*to\s*"
-        r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
-        r"\s*=\s*AED\s*"
-        r"([\d]+(?:,\s*\d{3})*)"
-        r"(?:\s*\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)\))?"
-    )
+    area = extract_area(text)
+    escalation = extract_escalation(text)
 
-    matches = re.findall(pattern, cleaned, re.I)
+    # Clean PDF broken spaces
+    cleaned = text.replace("\n", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"(\d),\s+(\d)", r"\1,\2", cleaned)
+
+    # Fix common broken amount issue
+    cleaned = cleaned.replace("21,479, 280", "21,479,280")
+
+    pattern = r"""
+    (\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})
+    \s*to\s*
+    (\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})
+    \s*=\s*AED\s*
+    ([0-9]{1,3}(?:,\s*[0-9]{3})+|[0-9]+)
+    (?:\s*\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)\))?
+    """
+
+    matches = re.findall(pattern, cleaned, re.I | re.X)
 
     for start_txt, end_txt, amount_txt, rate_txt, area_txt in matches:
         start = parse_date(start_txt)
@@ -88,13 +96,13 @@ def extract_land_lease_terms(text):
         amount = clean_number(amount_txt)
         rate = float(rate_txt) if rate_txt else 0
 
-        charge_type = "Fixed Revenue"
-        basis = "Period fixed amount"
-
         if rate > 0:
             charge_type = "Area Based"
             basis = f"AED {rate} × {int(area)} sqm"
             amount = rate * area
+        else:
+            charge_type = "Fixed Revenue"
+            basis = "Period fixed amount"
 
         rows.append({
             "Revenue Type": "Land Lease",
@@ -111,6 +119,7 @@ def extract_land_lease_terms(text):
             "Remarks": "Extracted from contract"
         })
 
+    # Escalation row after last land lease period
     if escalation > 0 and rows:
         last = rows[-1]
         esc_start = last["End Date"] + timedelta(days=1)
@@ -120,8 +129,8 @@ def extract_land_lease_terms(text):
             "Revenue Type": "Land Lease",
             "Start Date": esc_start,
             "End Date": esc_end,
-            "Charge Type": "Area Based Escalation",
-            "Basis": f"Previous year rate escalated by {escalation}%",
+            "Charge Type": "Escalated Revenue",
+            "Basis": f"Previous year amount escalated by {escalation}%",
             "Area Sqm": area,
             "Volume Tons": 0,
             "Rate": last["Rate"],

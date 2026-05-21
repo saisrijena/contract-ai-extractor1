@@ -19,35 +19,91 @@ def extract_pdf_text(file):
         text += page.get_text("text") + "\n"
     return text
 
-def normalize_text(text):
-    text = str(text)
-    text = text.replace("\n", " ")
-    text = text.replace("\t", " ")
-    text = text.replace("×", "X")
-    text = re.sub(r"(\d+)\s+(st|nd|rd|th)", r"\1\2", text, flags=re.I)
-    text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
-    text = re.sub(r"\s+", " ", text)
+def extract_land_lease_rows(section):
+    rows = []
 
-    replacements = {
-        "Jan ": "January ",
-        "Feb ": "February ",
-        "Mar ": "March ",
-        "Apr ": "April ",
-        "Jun ": "June ",
-        "Jul ": "July ",
-        "Aug ": "August ",
-        "Sep ": "September ",
-        "Sept ": "September ",
-        "Oct ": "October ",
-        "Nov ": "November ",
-        "Dec ": "December ",
-    }
+    section = normalize_text(section)
+    area = extract_area(section)
 
-    for short, full in replacements.items():
-        text = text.replace(short, full)
+    date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
 
-    return text.strip()
+    period_pattern = rf"(?:From\s*)?({date_regex})\s*to\s*({date_regex})"
+    period_matches = list(re.finditer(period_pattern, section, re.I))
 
+    for index, match in enumerate(period_matches):
+        start_text = match.group(1)
+        end_text = match.group(2)
+
+        start_date = parse_date(start_text)
+        end_date = parse_date(end_text)
+
+        if not start_date or not end_date:
+            continue
+
+        segment_start = match.start()
+        segment_end = period_matches[index + 1].start() if index + 1 < len(period_matches) else len(section)
+        segment = section[segment_start:segment_end]
+
+        # Skip escalation line like AED 2.5% escalation
+        if re.search(r"AED\s*\d+\.?\d*\s*%", segment, re.I):
+            continue
+
+        # Detect area-based logic: AED 60 X 357,988
+        rate_match = re.search(
+            r"AED\s*([\d.]+)\s*X\s*([\d,]+)",
+            segment,
+            re.I
+        )
+
+        # Extract amount after = AED, but do not stop at broken comma
+        amount_match = re.search(
+            r"=\s*AED\s*([0-9][0-9,\s]*[0-9])",
+            segment,
+            re.I
+        )
+
+        if not amount_match and not rate_match:
+            continue
+
+        if rate_match:
+            rate = float(rate_match.group(1))
+            area_from_formula = clean_number(rate_match.group(2))
+            final_area = area if area > 0 else area_from_formula
+
+            amount = rate * final_area
+
+            charge_type = "Area Based Revenue"
+            calculation_basis = f"AED {rate} × {int(final_area)} sqm"
+
+        else:
+            rate = 0
+            final_area = area
+
+            amount_text = amount_match.group(1)
+
+            # Clean amount safely
+            amount_text = re.sub(r"\s+", "", amount_text)
+            amount = clean_number(amount_text)
+
+            charge_type = "Fixed Revenue"
+            calculation_basis = "Fixed amount for specific period"
+
+        rows.append({
+            "Revenue Type": "Land Lease",
+            "Start Date": start_date,
+            "End Date": end_date,
+            "Charge Type": charge_type,
+            "Area Sqm": final_area,
+            "Rate AED/Sqm": rate,
+            "Amount AED": amount,
+            "Amount AED Mn": to_mn(amount),
+            "Escalation %": 0,
+            "Calculation Basis": calculation_basis
+        })
+
+    rows = sorted(rows, key=lambda x: x["Start Date"])
+
+    return rows
 def parse_date(text):
     text = str(text).strip()
     text = re.sub(r"(\d+)\s*(st|nd|rd|th)", r"\1", text, flags=re.I)

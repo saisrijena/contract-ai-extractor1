@@ -3,3 +3,4 @@ pymupdf
 pandas
 openpyxl
 python-docx
+python-dateutil

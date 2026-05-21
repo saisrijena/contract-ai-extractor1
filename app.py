@@ -23,20 +23,53 @@ def normalize_text(text):
     text = str(text)
     text = text.replace("\n", " ")
     text = text.replace("\t", " ")
+    text = text.replace("×", "X")
     text = re.sub(r"(\d+)\s+(st|nd|rd|th)", r"\1\2", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text)
     text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
-    text = text.replace("Oct ", "October ")
-    text = text.replace("Sep ", "September ")
-    text = text.replace("Sept ", "September ")
+    text = re.sub(r"\s+", " ", text)
+
+    replacements = {
+        "Jan ": "January ",
+        "Feb ": "February ",
+        "Mar ": "March ",
+        "Apr ": "April ",
+        "Jun ": "June ",
+        "Jul ": "July ",
+        "Aug ": "August ",
+        "Sep ": "September ",
+        "Sept ": "September ",
+        "Oct ": "October ",
+        "Nov ": "November ",
+        "Dec ": "December ",
+    }
+
+    for short, full in replacements.items():
+        text = text.replace(short, full)
+
     return text.strip()
 
 def parse_date(text):
     text = str(text).strip()
     text = re.sub(r"(\d+)\s*(st|nd|rd|th)", r"\1", text, flags=re.I)
-    text = text.replace("Oct", "October")
-    text = text.replace("Sept", "September")
-    text = text.replace("Sep", "September")
+
+    month_map = {
+        "Jan": "January",
+        "Feb": "February",
+        "Mar": "March",
+        "Apr": "April",
+        "Jun": "June",
+        "Jul": "July",
+        "Aug": "August",
+        "Sep": "September",
+        "Sept": "September",
+        "Oct": "October",
+        "Nov": "November",
+        "Dec": "December",
+    }
+
+    for short, full in month_map.items():
+        text = re.sub(rf"\b{short}\b", full, text, flags=re.I)
+
     text = re.sub(r"\s+", " ", text).strip()
 
     for fmt in ["%d %B %Y", "%d %b %Y"]:
@@ -88,10 +121,23 @@ def get_land_lease_section(text):
     return cleaned
 
 def extract_area(section):
+    section = normalize_text(section)
     match = re.search(r"Total Area\s*[:\-]?\s*([\d,]+)\s*Sq", section, re.I)
-    return clean_number(match.group(1)) if match else 0
+
+    if match:
+        return clean_number(match.group(1))
+
+    # fallback: find area inside AED 60 X 357,988
+    match = re.search(r"AED\s*[\d.]+\s*X\s*([\d,]+)", section, re.I)
+
+    if match:
+        return clean_number(match.group(1))
+
+    return 0
 
 def extract_escalation_info(section):
+    section = normalize_text(section)
+
     date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
 
     pattern = rf"""
@@ -123,60 +169,71 @@ def extract_escalation_info(section):
 
     return None
 
-def extract_fixed_and_area_rows(section):
+def extract_land_lease_rows(section):
     rows = []
 
     section = normalize_text(section)
     area = extract_area(section)
 
-    month_regex = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
-    date_regex = rf"\d{{1,2}}\s*(?:st|nd|rd|th)?\s+{month_regex}\s+\d{{4}}"
+    date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
 
-    pattern = rf"""
-    ({date_regex})
-    \s*to\s*
-    ({date_regex})
-    \s*=\s*AED\s*
-    ([0-9]{{1,3}}(?:,\s*[0-9]{{3}})+|[0-9]+)
-    (?!\s*[\.\%])
-    """
+    # Find every date-to-date period
+    period_pattern = rf"(?:From\s*)?({date_regex})\s*to\s*({date_regex})"
+    period_matches = list(re.finditer(period_pattern, section, re.I))
 
-    matches = list(re.finditer(pattern, section, re.I | re.X))
+    for index, match in enumerate(period_matches):
+        start_text = match.group(1)
+        end_text = match.group(2)
 
-    for match in matches:
-        start = parse_date(match.group(1))
-        end = parse_date(match.group(2))
+        start_date = parse_date(start_text)
+        end_date = parse_date(end_text)
 
-        if not start or not end:
+        if not start_date or not end_date:
             continue
 
-        amount_text = match.group(3)
-        amount = clean_number(amount_text)
+        segment_start = match.start()
+        segment_end = period_matches[index + 1].start() if index + 1 < len(period_matches) else len(section)
+        segment = section[segment_start:segment_end]
 
-        row_context = section[match.start():match.end() + 150]
+        # Skip escalation line like AED 2.5% escalation
+        if re.search(r"AED\s*\d+\.?\d*\s*%", segment, re.I):
+            continue
 
-        rate_match = re.search(
-            r"\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)",
-            row_context,
+        # Detect rate logic: (AED 60 X 357,988)
+        rate_match = re.search(r"AED\s*([\d.]+)\s*X\s*([\d,]+)", segment, re.I)
+
+        # Detect amount after = AED
+        amount_match = re.search(
+            r"=\s*AED\s*([0-9]{1,3}(?:,\s*[0-9]{3})+|[0-9]+)",
+            segment,
             re.I
         )
 
+        if not amount_match and not rate_match:
+            continue
+
         if rate_match:
             rate = float(rate_match.group(1))
-            amount = rate * area
+            area_from_formula = clean_number(rate_match.group(2))
+            final_area = area if area > 0 else area_from_formula
+            amount = rate * final_area
+
             charge_type = "Area Based Revenue"
-            calculation_basis = f"AED {rate} × {int(area)} sqm"
+            calculation_basis = f"AED {rate} × {int(final_area)} sqm"
         else:
             rate = 0
+            final_area = area
+            amount = clean_number(amount_match.group(1))
+
             charge_type = "Fixed Revenue"
             calculation_basis = "Fixed amount for specific period"
 
         rows.append({
             "Revenue Type": "Land Lease",
-            "Start Date": start,
-            "End Date": end,
+            "Start Date": start_date,
+            "End Date": end_date,
             "Charge Type": charge_type,
-            "Area Sqm": area,
+            "Area Sqm": final_area,
             "Rate AED/Sqm": rate,
             "Amount AED": amount,
             "Amount AED Mn": to_mn(amount),
@@ -189,7 +246,7 @@ def extract_fixed_and_area_rows(section):
     return rows
 
 def build_land_lease_terms(section, escalation_years=30):
-    rows = extract_fixed_and_area_rows(section)
+    rows = extract_land_lease_rows(section)
     escalation = extract_escalation_info(section)
 
     if escalation and rows:
@@ -313,11 +370,12 @@ if uploaded_file:
     terms_df = pd.DataFrame(terms)
 
     st.subheader("Extracted Land Lease Terms")
+
     edited_terms_df = st.data_editor(
         terms_df,
         num_rows="dynamic",
         use_container_width=True,
-        height=400
+        height=450
     )
 
     st.subheader("Projection Settings")
@@ -342,6 +400,7 @@ if uploaded_file:
     )
 
     st.subheader("Quarterly Land Lease Revenue Projection")
+
     st.dataframe(
         projection_df,
         use_container_width=True,

@@ -62,13 +62,19 @@ def extract_area(text):
 # ---------------- LAND LEASE ENGINE ----------------
 
 def extract_land_lease_terms(text):
+    rows = []
     cleaned = normalize_text(text)
     area = extract_area(cleaned)
     escalation = extract_escalation(cleaned)
 
-    rows = []
-
-    pattern = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*to\s*(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*=\s*AED\s*([\d,\s]+)(?:\s*\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)\))?"
+    pattern = (
+        r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
+        r"\s*to\s*"
+        r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
+        r"\s*=\s*AED\s*"
+        r"([\d]+(?:,\s*\d{3})*)"
+        r"(?:\s*\(AED\s*([\d.]+)\s*[xX]\s*([\d,]+)\))?"
+    )
 
     matches = re.findall(pattern, cleaned, re.I)
 
@@ -105,7 +111,6 @@ def extract_land_lease_terms(text):
             "Remarks": "Extracted from contract"
         })
 
-    # Add land lease escalation after last area-based/fixed year
     if escalation > 0 and rows:
         last = rows[-1]
         esc_start = last["End Date"] + timedelta(days=1)
@@ -119,7 +124,7 @@ def extract_land_lease_terms(text):
             "Basis": f"Previous year rate escalated by {escalation}%",
             "Area Sqm": area,
             "Volume Tons": 0,
-            "Rate": last["Rate"] if last["Rate"] else 0,
+            "Rate": last["Rate"],
             "Amount AED": last["Amount AED"],
             "Amount AED Mn": to_mn(last["Amount AED"]),
             "Escalation %": escalation,
@@ -127,7 +132,6 @@ def extract_land_lease_terms(text):
         })
 
     return rows
-
 # ---------------- THROUGHPUT ENGINE ----------------
 
 def extract_rate_slabs(text):

@@ -2,4 +2,3 @@ streamlit
 pymupdf
 pandas
 openpyxl
-openai

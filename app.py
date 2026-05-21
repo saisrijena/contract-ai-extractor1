@@ -17,13 +17,19 @@ def extract_pdf_text(file):
         text += page.get_text() + "\n"
     return text
 
+def normalize_text(text):
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
+    return text
+
 def parse_date(text):
-    text = str(text)
+    text = str(text).strip()
     text = re.sub(r"(\d+)\s*(st|nd|rd|th)", r"\1", text, flags=re.I)
     text = text.replace("Oct", "October")
     text = text.replace("Sept", "September")
     text = text.replace("Sep", "September")
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text)
 
     for fmt in ["%d %B %Y", "%d %b %Y"]:
         try:
@@ -36,7 +42,7 @@ def clean_amount(x):
     return float(str(x).replace(",", "").replace(" ", ""))
 
 def to_million(x):
-    return round(x / 1_000_000, 2)
+    return round(float(x) / 1_000_000, 2)
 
 def extract_escalation(text):
     m = re.search(r"(\d+\.?\d*)\s*%\s*escalation", text, re.I)
@@ -44,37 +50,29 @@ def extract_escalation(text):
 
 def extract_land_lease(text):
     rows = []
-    lines = text.splitlines()
+    cleaned_text = normalize_text(text)
 
-    pattern = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s+to\s+(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*=\s*AED\s*([\d,\s]+)"
-    rate_pattern = r"AED\s*([\d.]+)\s*[xX]"
+    pattern = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*to\s*(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*=\s*AED\s*([\d,\s]+)"
 
-    for line in lines:
-        line = re.sub(r"\s+", " ", line)
-        line = re.sub(r"(\d),\s+(\d)", r"\1,\2", line)
+    matches = re.findall(pattern, cleaned_text, re.I)
 
-        m = re.search(pattern, line, re.I)
+    for start_text, end_text, amount_text in matches:
+        start = parse_date(start_text)
+        end = parse_date(end_text)
+        amount = clean_amount(amount_text)
 
-        if m:
-            start = parse_date(m.group(1))
-            end = parse_date(m.group(2))
-            amount = clean_amount(m.group(3))
-
-            rate_match = re.search(rate_pattern, line, re.I)
-            rate = float(rate_match.group(1)) if rate_match else 0
-
-            if start and end:
-                rows.append({
-                    "Type": "Land Lease",
-                    "Start Date": start,
-                    "End Date": end,
-                    "Amount AED": amount,
-                    "Amount AED Mn": to_million(amount),
-                    "Volume": 0,
-                    "Rate": rate,
-                    "Escalation %": 0,
-                    "Remarks": "Fixed revenue period"
-                })
+        if start and end:
+            rows.append({
+                "Type": "Land Lease",
+                "Start Date": start,
+                "End Date": end,
+                "Amount AED": amount,
+                "Amount AED Mn": to_million(amount),
+                "Volume": 0,
+                "Rate": 0,
+                "Escalation %": 0,
+                "Remarks": "Fixed revenue period"
+            })
 
     escalation = extract_escalation(text)
 
@@ -97,37 +95,54 @@ def extract_land_lease(text):
     return rows
 
 def extract_rate_slabs(text):
-    pattern = r"(Up to\s+[\d.]+\s*Million\s+tons?|[\d.]+\s+to\s+[\d.]+\s*Million\s+Tons?)\s*[:=]\s*AED\s*([\d.]+)\s*per\s*Ton"
-    return re.findall(pattern, text, re.I)
+    cleaned_text = normalize_text(text)
+
+    pattern = r"(Up to\s+[\d.]+\s*Million\s+tons?|[\d.]+\s+to\s+[\d.]+\s*Million\s+tons?)\s*[:=]\s*AED\s*([\d.]+)\s*per\s*Ton"
+
+    matches = re.findall(pattern, cleaned_text, re.I)
+
+    slabs = []
+
+    for slab, rate in matches:
+        slabs.append({
+            "Volume Slab": slab,
+            "Rate AED/Ton": float(rate)
+        })
+
+    return slabs
 
 def get_default_rate(text):
     slabs = extract_rate_slabs(text)
-    return float(slabs[0][1]) if slabs else 0
+    if slabs:
+        return slabs[0]["Rate AED/Ton"]
+    return 0
 
 def extract_throughput(text):
     rows = []
+    cleaned_text = normalize_text(text)
+
     default_rate = get_default_rate(text)
     escalation = extract_escalation(text)
 
-    pattern = r"([\d.]+)\s*Million\s+tons?\s+from\s+(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s+to\s+(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
+    pattern = r"([\d.]+)\s*Million\s+tons?\s+from\s+(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*to\s*(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
 
-    matches = re.findall(pattern, text, re.I)
+    matches = re.findall(pattern, cleaned_text, re.I)
 
-    for volume, start, end in matches:
-        start_date = parse_date(start)
-        end_date = parse_date(end)
+    for volume_text, start_text, end_text in matches:
+        start = parse_date(start_text)
+        end = parse_date(end_text)
 
-        if start_date and end_date:
-            volume_tons = float(volume) * 1_000_000
-            amount = volume_tons * default_rate
+        if start and end:
+            volume = float(volume_text) * 1_000_000
+            amount = volume * default_rate if default_rate else 0
 
             rows.append({
                 "Type": "Throughput",
-                "Start Date": start_date,
-                "End Date": end_date,
+                "Start Date": start,
+                "End Date": end,
                 "Amount AED": amount,
                 "Amount AED Mn": to_million(amount),
-                "Volume": volume_tons,
+                "Volume": volume,
                 "Rate": default_rate,
                 "Escalation %": escalation,
                 "Remarks": "Volume commitment × product handling rate"
@@ -136,20 +151,32 @@ def extract_throughput(text):
     return rows
 
 def quarter_ranges(start_year, end_year):
-    q = []
-    for y in range(start_year, end_year + 1):
-        q += [
-            (f"Q1 {y}", datetime(y,1,1), datetime(y,3,31)),
-            (f"Q2 {y}", datetime(y,4,1), datetime(y,6,30)),
-            (f"Q3 {y}", datetime(y,7,1), datetime(y,9,30)),
-            (f"Q4 {y}", datetime(y,10,1), datetime(y,12,31)),
-        ]
-    return q
+    quarters = []
 
-def overlap_days(a_start, a_end, b_start, b_end):
-    start = max(a_start, b_start)
-    end = min(a_end, b_end)
-    return max(0, (end - start).days + 1)
+    for y in range(start_year, end_year + 1):
+        quarters.extend([
+            (f"Q1 {y}", datetime(y, 1, 1), datetime(y, 3, 31)),
+            (f"Q2 {y}", datetime(y, 4, 1), datetime(y, 6, 30)),
+            (f"Q3 {y}", datetime(y, 7, 1), datetime(y, 9, 30)),
+            (f"Q4 {y}", datetime(y, 10, 1), datetime(y, 12, 31)),
+        ])
+
+    return quarters
+
+def overlap_days(start1, end1, start2, end2):
+    latest_start = max(start1, start2)
+    earliest_end = min(end1, end2)
+    days = (earliest_end - latest_start).days + 1
+    return max(0, days)
+
+def calculate_escalated_value(term, q_start):
+    value = term["Amount AED"]
+
+    if term["Escalation %"] > 0:
+        years_passed = max(0, q_start.year - term["Start Date"].year)
+        value = value * ((1 + term["Escalation %"] / 100) ** years_passed)
+
+    return value
 
 def build_projection(terms, start_year, end_year):
     output = []
@@ -160,22 +187,25 @@ def build_projection(terms, start_year, end_year):
         logic = []
 
         for term in terms:
+            if pd.isna(term["Start Date"]) or pd.isna(term["End Date"]):
+                continue
+
             days = overlap_days(term["Start Date"], term["End Date"], q_start, q_end)
 
             if days > 0:
                 total_days = (term["End Date"] - term["Start Date"]).days + 1
-                value = term["Amount AED"] * days / total_days
+                annual_or_period_amount = calculate_escalated_value(term, q_start)
 
-                if term["Escalation %"] > 0:
-                    years_passed = max(0, q_start.year - term["Start Date"].year)
-                    value = value * ((1 + term["Escalation %"] / 100) ** years_passed)
+                value = annual_or_period_amount * days / total_days
 
                 if "Land Lease" in term["Type"]:
                     land += value
                 elif term["Type"] == "Throughput":
                     throughput += value
 
-                logic.append(f"{term['Type']}: AED {to_million(value)} Mn")
+                logic.append(
+                    f"{term['Type']}: AED {to_million(value)} Mn = AED {to_million(annual_or_period_amount)} Mn × {days}/{total_days}"
+                )
 
         output.append({
             "Quarter": quarter,
@@ -197,29 +227,37 @@ if uploaded_file:
     with st.expander("View Extracted Contract Text"):
         st.text_area("Contract Content", raw_text, height=300)
 
-    terms = []
-    terms.extend(extract_land_lease(raw_text))
-    terms.extend(extract_throughput(raw_text))
+    land_terms = extract_land_lease(raw_text)
+    throughput_terms = extract_throughput(raw_text)
+    all_terms = land_terms + throughput_terms
 
-    terms_df = pd.DataFrame(terms)
+    if not all_terms:
+        st.error("No contract terms extracted. Please check PDF text format.")
+        st.stop()
+
+    terms_df = pd.DataFrame(all_terms)
 
     st.subheader("Extracted Contract Terms")
     edited_terms_df = st.data_editor(terms_df, num_rows="dynamic")
 
     slabs = extract_rate_slabs(raw_text)
-    slabs_df = pd.DataFrame(slabs, columns=["Volume Slab", "Rate AED/Ton"])
+    slabs_df = pd.DataFrame(slabs)
 
     st.subheader("Extracted Throughput Rate Slabs")
     st.dataframe(slabs_df)
 
     st.subheader("Projection Settings")
+
+    min_year = int(edited_terms_df["Start Date"].dt.year.min())
+    max_year = int(edited_terms_df["End Date"].dt.year.max())
+
     col1, col2 = st.columns(2)
 
     with col1:
-        start_year = st.number_input("Start Calendar Year", value=2024)
+        start_year = st.number_input("Start Calendar Year", value=min_year)
 
     with col2:
-        end_year = st.number_input("End Calendar Year", value=2035)
+        end_year = st.number_input("End Calendar Year", value=min(max_year, min_year + 15))
 
     projection_df = build_projection(
         edited_terms_df.to_dict("records"),

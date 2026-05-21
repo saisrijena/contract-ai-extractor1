@@ -6,6 +6,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from docx import Document
 from dateutil.relativedelta import relativedelta
+from dateutil.parser import parse as date_parse
 
 st.set_page_config(page_title="Land Lease Revenue Engine", layout="wide")
 st.title("Land Lease Revenue Projection Engine")
@@ -76,7 +77,6 @@ def normalize_text(text):
     # 21,479, 280 -> 21,479,280
     text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
 
-    # Standard spacing
     text = re.sub(r"\s+", " ", text)
 
     month_map = {
@@ -111,7 +111,6 @@ def parse_date(text):
     formats = [
         "%d %B %Y",
         "%B %d, %Y",
-        "%B %d,%Y",
         "%B %d %Y",
         "%Y-%m-%d",
     ]
@@ -122,7 +121,10 @@ def parse_date(text):
         except ValueError:
             pass
 
-    return None
+    try:
+        return date_parse(text, fuzzy=True, dayfirst=True)
+    except Exception:
+        return None
 
 
 def clean_number(value):
@@ -173,34 +175,32 @@ def period_amount_from_annual_rate(start_date, end_date, rate, area):
 # HEADER EXTRACTION
 # --------------------------------------------------
 
-def extract_effective_date(text):
+def extract_date_after_label(text, label):
     cleaned = normalize_text(text)
 
-    match = re.search(
-        rf"Effective Date\s*[:\-]?\s*({DATE_REGEX})",
-        cleaned,
-        re.I
-    )
+    pattern = rf"{label}\s*[:\-]?\s*({DATE_REGEX})"
+    match = re.search(pattern, cleaned, re.I)
 
     if match:
         return parse_date(match.group(1))
 
+    # fallback: take short text after label and try fuzzy date parsing
+    label_match = re.search(label, cleaned, re.I)
+    if label_match:
+        snippet = cleaned[label_match.end():label_match.end() + 80]
+        date_match = re.search(DATE_REGEX, snippet, re.I)
+        if date_match:
+            return parse_date(date_match.group(0))
+
     return None
+
+
+def extract_effective_date(text):
+    return extract_date_after_label(text, r"Effective\s*Date")
 
 
 def extract_handover_date(text):
-    cleaned = normalize_text(text)
-
-    match = re.search(
-        rf"Handover Date\s*[:\-]?\s*({DATE_REGEX})",
-        cleaned,
-        re.I
-    )
-
-    if match:
-        return parse_date(match.group(1))
-
-    return None
+    return extract_date_after_label(text, r"Handover\s*Date")
 
 
 def extract_contract_term_years(text):
@@ -218,9 +218,11 @@ def extract_contract_term_years(text):
     return None
 
 
-def calculate_contract_end_date(effective_date, contract_term_years):
-    if effective_date and contract_term_years:
-        return add_years(effective_date, contract_term_years) - timedelta(days=1)
+def calculate_contract_end_date(effective_date, contract_term_years, fallback_start_date=None):
+    start_date = effective_date or fallback_start_date
+
+    if start_date and contract_term_years:
+        return add_years(start_date, contract_term_years) - timedelta(days=1)
 
     return None
 
@@ -377,7 +379,7 @@ def extract_explicit_period_rows(section):
         if re.search(r"AED\s*\d+\.?\d*\s*%", segment, re.I):
             continue
 
-        # Area-based formula: AED 60 X 357,988
+        # Area formula: AED 60 X 357,988
         rate_match = re.search(
             r"AED\s*([\d.]+)\s*X\s*([\d,]+)",
             segment,
@@ -546,8 +548,16 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
     effective_date = extract_effective_date(full_text)
     handover_date = extract_handover_date(full_text)
     cod_date = extract_commercial_operations_date(full_text)
+    contract_term_years = extract_contract_term_years(full_text)
 
     billing_start = handover_date or effective_date
+
+    if not contract_end_date:
+        contract_end_date = calculate_contract_end_date(
+            effective_date,
+            contract_term_years,
+            fallback_start_date=billing_start
+        )
 
     if not area or not billing_start or not cod_date:
         return rows
@@ -628,12 +638,15 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
     # Escalation from COD year, example: From 5th year of Commercial Operations = 2.5%
     cod_escalation = extract_cod_year_escalation(section)
 
-    if cod_escalation and cod_rates and contract_end_date:
+    if cod_escalation and cod_rates:
         escalation_percent = cod_escalation["percent"]
         from_year = cod_escalation["from_year"]
 
         last_known_rate = cod_rates[-1]["rate"]
         last_known_year = cod_rates[-1]["year_no"]
+
+        if not contract_end_date:
+            contract_end_date = add_years(cod_date, 30) - timedelta(days=1)
 
         current_year_no = from_year
 
@@ -686,11 +699,13 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
 
 def build_land_lease_terms(full_text):
     effective_date = extract_effective_date(full_text)
+    handover_date = extract_handover_date(full_text)
     contract_term_years = extract_contract_term_years(full_text)
 
     contract_end_date = calculate_contract_end_date(
         effective_date,
-        contract_term_years
+        contract_term_years,
+        fallback_start_date=handover_date
     )
 
     section = get_land_lease_section(full_text)
@@ -709,8 +724,6 @@ def build_land_lease_terms(full_text):
         contract_end_date
     )
 
-    # If handover/COD rate schedule is present, use it.
-    # Otherwise use explicit period rows.
     if rate_schedule_rows:
         return rate_schedule_rows, section, contract_end_date
 
@@ -793,7 +806,8 @@ if uploaded_file:
 
     contract_end_date = calculate_contract_end_date(
         effective_date,
-        contract_term_years
+        contract_term_years,
+        fallback_start_date=handover_date
     )
 
     header_df = pd.DataFrame([{

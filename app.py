@@ -26,6 +26,7 @@ def extract_pdf_text(file):
         text += page.get_text("text") + "\n"
     return text
 
+
 def extract_docx_text(file):
     document = Document(file)
     text = ""
@@ -33,8 +34,10 @@ def extract_docx_text(file):
         text += para.text + "\n"
     return text
 
+
 def extract_txt_text(file):
     return file.read().decode("utf-8", errors="ignore")
+
 
 def extract_file_text(file):
     name = file.name.lower()
@@ -50,12 +53,19 @@ def extract_file_text(file):
 
     return ""
 
+
 # --------------------------------------------------
 # BASIC HELPERS
 # --------------------------------------------------
 
+DAY_FIRST_DATE = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}"
+MONTH_FIRST_DATE = r"[A-Za-z]+\s+\d{1,2},?\s*\d{4}"
+DATE_REGEX = rf"(?:{DAY_FIRST_DATE}|{MONTH_FIRST_DATE})"
+
+
 def normalize_text(text):
     text = str(text)
+
     text = text.replace("\n", " ")
     text = text.replace("\t", " ")
     text = text.replace("×", "X")
@@ -66,9 +76,7 @@ def normalize_text(text):
     # 21,479, 280 -> 21,479,280
     text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
 
-    # 1,716,38 1 -> 1,716,381
-    text = re.sub(r"(?<=\d)\s+(?=\d)", "", text)
-
+    # Standard spacing
     text = re.sub(r"\s+", " ", text)
 
     month_map = {
@@ -91,7 +99,11 @@ def normalize_text(text):
 
     return text.strip()
 
+
 def parse_date(text):
+    if not text:
+        return None
+
     text = str(text).strip()
     text = re.sub(r"(\d+)\s*(st|nd|rd|th)", r"\1", text, flags=re.I)
     text = normalize_text(text)
@@ -99,8 +111,9 @@ def parse_date(text):
     formats = [
         "%d %B %Y",
         "%B %d, %Y",
+        "%B %d,%Y",
         "%B %d %Y",
-        "%Y-%m-%d"
+        "%Y-%m-%d",
     ]
 
     for fmt in formats:
@@ -111,11 +124,17 @@ def parse_date(text):
 
     return None
 
+
 def clean_number(value):
-    return float(str(value).replace(",", "").replace(" ", ""))
+    value = str(value)
+    value = value.replace(",", "")
+    value = value.replace(" ", "")
+    return float(value)
+
 
 def to_mn(value):
     return round(float(value) / 1_000_000, 2)
+
 
 def add_years(date_value, years):
     try:
@@ -123,87 +142,118 @@ def add_years(date_value, years):
     except ValueError:
         return date_value.replace(month=2, day=28, year=date_value.year + years)
 
+
 def ensure_datetime(value):
     if isinstance(value, datetime):
         return value
+
     if isinstance(value, pd.Timestamp):
         return value.to_pydatetime()
+
     return pd.to_datetime(value).to_pydatetime()
+
 
 def overlap_days(start1, end1, start2, end2):
     start = max(start1, start2)
     end = min(end1, end2)
     return max(0, (end - start).days + 1)
 
+
 def annual_period_days(start_date):
     return (add_years(start_date, 1) - start_date).days
+
 
 def period_amount_from_annual_rate(start_date, end_date, rate, area):
     days = (end_date - start_date).days + 1
     annual_days = annual_period_days(start_date)
     return rate * area * days / annual_days
 
+
 # --------------------------------------------------
-# CONTRACT HEADER EXTRACTION
+# HEADER EXTRACTION
 # --------------------------------------------------
 
 def extract_effective_date(text):
     cleaned = normalize_text(text)
-    date_regex = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})"
 
-    match = re.search(r"Effective Date\s*[:\-]?\s*" + date_regex, cleaned, re.I)
+    match = re.search(
+        rf"Effective Date\s*[:\-]?\s*({DATE_REGEX})",
+        cleaned,
+        re.I
+    )
 
     if match:
         return parse_date(match.group(1))
 
     return None
+
 
 def extract_handover_date(text):
     cleaned = normalize_text(text)
-    date_regex = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})"
 
-    match = re.search(r"Handover Date\s*[:\-]?\s*" + date_regex, cleaned, re.I)
+    match = re.search(
+        rf"Handover Date\s*[:\-]?\s*({DATE_REGEX})",
+        cleaned,
+        re.I
+    )
 
     if match:
         return parse_date(match.group(1))
 
     return None
+
 
 def extract_contract_term_years(text):
     cleaned = normalize_text(text)
 
-    match = re.search(r"Contract Term\s*[:\-]?\s*(\d+)\s*years?", cleaned, re.I)
+    match = re.search(
+        r"Contract Term\s*[:\-]?\s*(\d+)\s*years?",
+        cleaned,
+        re.I
+    )
 
     if match:
         return int(match.group(1))
 
     return None
 
+
 def calculate_contract_end_date(effective_date, contract_term_years):
     if effective_date and contract_term_years:
         return add_years(effective_date, contract_term_years) - timedelta(days=1)
+
     return None
+
 
 def extract_area(text):
     cleaned = normalize_text(text)
 
-    match = re.search(r"Total Area\s*[:\-]?\s*([\d,]+)\s*Sq", cleaned, re.I)
+    match = re.search(
+        r"Total Area\s*[:\-]?\s*([\d,]+)\s*Sq",
+        cleaned,
+        re.I
+    )
 
     if match:
         return clean_number(match.group(1))
 
-    match = re.search(r"AED\s*[\d.]+\s*X\s*([\d,]+)", cleaned, re.I)
+    match = re.search(
+        r"AED\s*[\d.]+\s*X\s*([\d,]+)",
+        cleaned,
+        re.I
+    )
 
     if match:
         return clean_number(match.group(1))
 
     return 0
 
+
 def get_land_lease_section(text):
     cleaned = normalize_text(text)
 
     match = re.search(
-        r"Land\s+Lease\s*:?(.*?)(?:Throughput|Commercial Operations date:.*?Volume Commitments|Product Handling|$)",
+        r"Land\s+Lease\s*:?(.*?)(?:Throughput|Volume Commitments|Product Handling|$)",
         cleaned,
         re.I
     )
@@ -213,6 +263,7 @@ def get_land_lease_section(text):
 
     return cleaned
 
+
 # --------------------------------------------------
 # COMMERCIAL OPERATIONS DATE
 # --------------------------------------------------
@@ -220,11 +271,9 @@ def get_land_lease_section(text):
 def extract_commercial_operations_date(text):
     cleaned = normalize_text(text)
 
-    date_regex = r"(\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})"
-
     # Example: Commercial Operations date: 36 months from September 01, 2025
     match = re.search(
-        r"Commercial Operations date\s*[:\-]?\s*(\d+)\s*months?\s*from\s*" + date_regex,
+        rf"Commercial Operations date\s*[:\-]?\s*(\d+)\s*months?\s*from\s*({DATE_REGEX})",
         cleaned,
         re.I
     )
@@ -236,9 +285,9 @@ def extract_commercial_operations_date(text):
         if base_date:
             return base_date + relativedelta(months=months)
 
-    # Example: Commercial Operations date ... i.e. 25th October 2027
+    # Example: Commercial Operations date: 42 months from Effective Date i.e. 25th October 2027
     match = re.search(
-        r"Commercial Operations date.*?i\.?e\.?\s*" + date_regex,
+        rf"Commercial Operations date.*?i\.?e\.?\s*({DATE_REGEX})",
         cleaned,
         re.I
     )
@@ -248,24 +297,19 @@ def extract_commercial_operations_date(text):
 
     return None
 
+
 # --------------------------------------------------
 # ESCALATION EXTRACTION
 # --------------------------------------------------
 
 def extract_date_based_escalation(section):
     section = normalize_text(section)
-    date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
 
-    pattern = rf"""
-    From\s*
-    ({date_regex})
-    \s*to\s*
-    ({date_regex})
-    .*?
-    (\d+\.?\d*)\s*%
-    """
-
-    match = re.search(pattern, section, re.I | re.X)
+    match = re.search(
+        rf"From\s*({DATE_REGEX})\s*to\s*({DATE_REGEX}).*?(\d+\.?\d*)\s*%",
+        section,
+        re.I
+    )
 
     if match:
         return {
@@ -277,10 +321,10 @@ def extract_date_based_escalation(section):
 
     return None
 
+
 def extract_cod_year_escalation(section):
     section = normalize_text(section)
 
-    # Example: From 5th year of Commercial Operations = 2.5% year on year
     match = re.search(
         r"From\s*(\d+)(?:st|nd|rd|th)?\s*year\s+of\s+Commercial Operations\s*=\s*(\d+\.?\d*)\s*%",
         section,
@@ -296,18 +340,9 @@ def extract_cod_year_escalation(section):
 
     return None
 
-def extract_any_escalation_percent(section):
-    section = normalize_text(section)
-
-    match = re.search(r"(\d+\.?\d*)\s*%\s*(?:year on year|escalation)", section, re.I)
-
-    if match:
-        return float(match.group(1))
-
-    return 0
 
 # --------------------------------------------------
-# PATTERN 1: EXPLICIT DATE-TO-DATE AED AMOUNTS
+# PATTERN 1: DATE-TO-DATE AED AMOUNT
 # --------------------------------------------------
 
 def extract_explicit_period_rows(section):
@@ -316,9 +351,7 @@ def extract_explicit_period_rows(section):
     section = normalize_text(section)
     area = extract_area(section)
 
-    date_regex = r"\d{1,2}\s*(?:st|nd|rd|th)?\s+\w+\s+\d{4}"
-    period_pattern = rf"(?:From\s*)?({date_regex})\s*to\s*({date_regex})"
-
+    period_pattern = rf"(?:From\s*)?({DATE_REGEX})\s*to\s*({DATE_REGEX})"
     period_matches = list(re.finditer(period_pattern, section, re.I))
 
     for index, match in enumerate(period_matches):
@@ -332,19 +365,26 @@ def extract_explicit_period_rows(section):
             continue
 
         segment_start = match.start()
-        segment_end = period_matches[index + 1].start() if index + 1 < len(period_matches) else len(section)
+        segment_end = (
+            period_matches[index + 1].start()
+            if index + 1 < len(period_matches)
+            else len(section)
+        )
+
         segment = section[segment_start:segment_end]
 
-        # Skip escalation row like: AED 2.5% escalation
+        # Skip escalation statement such as AED 2.5% escalation
         if re.search(r"AED\s*\d+\.?\d*\s*%", segment, re.I):
             continue
 
+        # Area-based formula: AED 60 X 357,988
         rate_match = re.search(
             r"AED\s*([\d.]+)\s*X\s*([\d,]+)",
             segment,
             re.I
         )
 
+        # Fixed amount: = AED 7,159,760
         amount_match = re.search(
             r"=\s*AED\s*([0-9][0-9,\s]*[0-9])",
             segment,
@@ -358,6 +398,7 @@ def extract_explicit_period_rows(section):
             rate = float(rate_match.group(1))
             area_from_formula = clean_number(rate_match.group(2))
             final_area = area if area > 0 else area_from_formula
+
             amount = rate * final_area
 
             charge_type = "Area Based Revenue"
@@ -366,7 +407,10 @@ def extract_explicit_period_rows(section):
         else:
             rate = 0
             final_area = area
-            amount_text = re.sub(r"\s+", "", amount_match.group(1))
+
+            amount_text = amount_match.group(1)
+            amount_text = re.sub(r"\s+", "", amount_text)
+
             amount = clean_number(amount_text)
 
             charge_type = "Fixed Revenue"
@@ -388,6 +432,71 @@ def extract_explicit_period_rows(section):
 
     return sorted(rows, key=lambda x: x["Start Date"])
 
+
+def append_date_based_escalation(rows, section, contract_end_date):
+    escalation = extract_date_based_escalation(section)
+
+    if not escalation or not rows:
+        return rows
+
+    escalation_percent = escalation["percent"]
+    escalation_start = escalation["start_date"] or rows[-1]["End Date"] + timedelta(days=1)
+
+    if contract_end_date is None:
+        contract_end_date = add_years(escalation_start, 30) - timedelta(days=1)
+
+    last_row = rows[-1]
+
+    base_rate = last_row["Rate AED/Sqm/Annum"]
+    base_amount = last_row["Amount AED"]
+    area = last_row["Area Sqm"]
+
+    current_start = escalation_start
+    year_no = 1
+
+    while current_start <= contract_end_date:
+        current_end = add_years(current_start, 1) - timedelta(days=1)
+
+        if current_end > contract_end_date:
+            current_end = contract_end_date
+
+        if base_rate and base_rate > 0:
+            escalated_rate = base_rate * ((1 + escalation_percent / 100) ** year_no)
+
+            amount = period_amount_from_annual_rate(
+                current_start,
+                current_end,
+                escalated_rate,
+                area
+            )
+
+            calculation_basis = f"AED {round(escalated_rate, 2)} × {int(area)} sqm per annum"
+
+        else:
+            escalated_rate = 0
+            amount = base_amount * ((1 + escalation_percent / 100) ** year_no)
+            calculation_basis = f"Previous period revenue escalated by {escalation_percent}%"
+
+        rows.append({
+            "Pattern": "Explicit Period",
+            "Revenue Type": "Land Lease",
+            "Start Date": current_start,
+            "End Date": current_end,
+            "Charge Type": "Escalated Revenue",
+            "Area Sqm": area,
+            "Rate AED/Sqm/Annum": round(escalated_rate, 2),
+            "Amount AED": amount,
+            "Amount AED Mn": to_mn(amount),
+            "Escalation %": escalation_percent,
+            "Calculation Basis": calculation_basis
+        })
+
+        current_start = current_end + timedelta(days=1)
+        year_no += 1
+
+    return sorted(rows, key=lambda x: x["Start Date"])
+
+
 # --------------------------------------------------
 # PATTERN 2: HANDOVER + COD RATE SCHEDULE
 # --------------------------------------------------
@@ -396,7 +505,7 @@ def extract_pre_cod_rate(section):
     section = normalize_text(section)
 
     match = re.search(
-        r"Land Lease rate up to Commercial Operations date\s*[:\-]?\s*AED\s*([\d.]+)\s*/?\s*Sq\.?M\s*/?\s*Annum",
+        r"Land Lease rate up to Commercial Operations date\s*[:\-]?\s*AED\s*([\d.]+)\s*/?\s*Sq\.?\s*M\s*/?\s*Annum",
         section,
         re.I
     )
@@ -406,10 +515,14 @@ def extract_pre_cod_rate(section):
 
     return None
 
+
 def extract_cod_year_rates(section):
     section = normalize_text(section)
 
-    pattern = r"(\d+)(?:st|nd|rd|th)?\s*year\s+of\s+Commercial Operations\s*=\s*AED\s*([\d.]+)\s*/?\s*Sq\.?M\s*/?\s*Annum"
+    pattern = (
+        r"(\d+)(?:st|nd|rd|th)?\s*year\s+of\s+Commercial Operations"
+        r"\s*=\s*AED\s*([\d.]+)\s*/?\s*Sq\.?\s*M\s*/?\s*Annum"
+    )
 
     matches = re.findall(pattern, section, re.I)
 
@@ -422,6 +535,7 @@ def extract_cod_year_rates(section):
         })
 
     return sorted(rates, key=lambda x: x["year_no"])
+
 
 def build_rate_schedule_rows(full_text, section, contract_end_date):
     rows = []
@@ -440,7 +554,7 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
 
     pre_cod_rate = extract_pre_cod_rate(section)
 
-    # Pre-COD billing period
+    # Pre-COD period: billing starts from handover date until COD - 1 day
     if pre_cod_rate:
         current_start = billing_start
         final_pre_cod_end = cod_date - timedelta(days=1)
@@ -474,7 +588,7 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
 
             current_start = current_end + timedelta(days=1)
 
-    # COD year-wise rates
+    # COD year rates
     cod_rates = extract_cod_year_rates(section)
 
     for item in cod_rates:
@@ -511,7 +625,7 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
             "Calculation Basis": f"AED {rate} × {int(area)} sqm per annum"
         })
 
-    # Escalation from COD year, e.g. from 5th year
+    # Escalation from COD year, example: From 5th year of Commercial Operations = 2.5%
     cod_escalation = extract_cod_year_escalation(section)
 
     if cod_escalation and cod_rates and contract_end_date:
@@ -535,7 +649,10 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
                 current_end = contract_end_date
 
             escalation_power = current_year_no - last_known_year
-            escalated_rate = last_known_rate * ((1 + escalation_percent / 100) ** escalation_power)
+
+            escalated_rate = last_known_rate * (
+                (1 + escalation_percent / 100) ** escalation_power
+            )
 
             amount = period_amount_from_annual_rate(
                 current_start,
@@ -562,68 +679,6 @@ def build_rate_schedule_rows(full_text, section, contract_end_date):
 
     return sorted(rows, key=lambda x: x["Start Date"])
 
-# --------------------------------------------------
-# PATTERN 1 ESCALATION CONTINUATION
-# --------------------------------------------------
-
-def append_date_based_escalation(rows, section, contract_end_date):
-    escalation = extract_date_based_escalation(section)
-
-    if not escalation or not rows:
-        return rows
-
-    escalation_percent = escalation["percent"]
-    escalation_start = escalation["start_date"] or rows[-1]["End Date"] + timedelta(days=1)
-
-    if contract_end_date is None:
-        contract_end_date = add_years(escalation_start, 30) - timedelta(days=1)
-
-    last_row = rows[-1]
-    base_rate = last_row["Rate AED/Sqm/Annum"]
-    base_amount = last_row["Amount AED"]
-    area = last_row["Area Sqm"]
-
-    current_start = escalation_start
-    year_no = 1
-
-    while current_start <= contract_end_date:
-        current_end = add_years(current_start, 1) - timedelta(days=1)
-
-        if current_end > contract_end_date:
-            current_end = contract_end_date
-
-        if base_rate and base_rate > 0:
-            escalated_rate = base_rate * ((1 + escalation_percent / 100) ** year_no)
-            amount = period_amount_from_annual_rate(
-                current_start,
-                current_end,
-                escalated_rate,
-                area
-            )
-            basis = f"AED {round(escalated_rate, 2)} × {int(area)} sqm per annum"
-        else:
-            escalated_rate = 0
-            amount = base_amount * ((1 + escalation_percent / 100) ** year_no)
-            basis = f"Previous period revenue escalated by {escalation_percent}%"
-
-        rows.append({
-            "Pattern": "Explicit Period",
-            "Revenue Type": "Land Lease",
-            "Start Date": current_start,
-            "End Date": current_end,
-            "Charge Type": "Escalated Revenue",
-            "Area Sqm": area,
-            "Rate AED/Sqm/Annum": round(escalated_rate, 2),
-            "Amount AED": amount,
-            "Amount AED Mn": to_mn(amount),
-            "Escalation %": escalation_percent,
-            "Calculation Basis": basis
-        })
-
-        current_start = current_end + timedelta(days=1)
-        year_no += 1
-
-    return sorted(rows, key=lambda x: x["Start Date"])
 
 # --------------------------------------------------
 # MASTER LAND LEASE BUILDER
@@ -632,6 +687,7 @@ def append_date_based_escalation(rows, section, contract_end_date):
 def build_land_lease_terms(full_text):
     effective_date = extract_effective_date(full_text)
     contract_term_years = extract_contract_term_years(full_text)
+
     contract_end_date = calculate_contract_end_date(
         effective_date,
         contract_term_years
@@ -640,6 +696,7 @@ def build_land_lease_terms(full_text):
     section = get_land_lease_section(full_text)
 
     explicit_rows = extract_explicit_period_rows(section)
+
     explicit_rows = append_date_based_escalation(
         explicit_rows,
         section,
@@ -652,11 +709,13 @@ def build_land_lease_terms(full_text):
         contract_end_date
     )
 
-    # Prefer rate schedule pattern if present, otherwise explicit rows
+    # If handover/COD rate schedule is present, use it.
+    # Otherwise use explicit period rows.
     if rate_schedule_rows:
         return rate_schedule_rows, section, contract_end_date
 
     return explicit_rows, section, contract_end_date
+
 
 # --------------------------------------------------
 # PROJECTION ENGINE
@@ -674,6 +733,7 @@ def quarter_ranges(start_year, end_year):
         ])
 
     return quarters
+
 
 def build_quarterly_projection(terms, start_year, end_year):
     output = []
@@ -713,6 +773,7 @@ def build_quarterly_projection(terms, start_year, end_year):
 
     return pd.DataFrame(output)
 
+
 # --------------------------------------------------
 # STREAMLIT APP
 # --------------------------------------------------
@@ -729,6 +790,7 @@ if uploaded_file:
     handover_date = extract_handover_date(raw_text)
     cod_date = extract_commercial_operations_date(raw_text)
     contract_term_years = extract_contract_term_years(raw_text)
+
     contract_end_date = calculate_contract_end_date(
         effective_date,
         contract_term_years
@@ -788,6 +850,7 @@ if uploaded_file:
     )
 
     st.subheader("Quarterly Land Lease Revenue Projection")
+
     st.dataframe(
         projection_df,
         use_container_width=True,
@@ -823,7 +886,12 @@ if uploaded_file:
     ].round(2)
 
     st.subheader("Calendar Year Land Lease Revenue")
-    st.dataframe(calendar_year_df, use_container_width=True, height=500)
+
+    st.dataframe(
+        calendar_year_df,
+        use_container_width=True,
+        height=500
+    )
 
     output = BytesIO()
 

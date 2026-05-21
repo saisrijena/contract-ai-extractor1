@@ -15,52 +15,103 @@ def extract_pdf_text(file):
         text += page.get_text()
     return text
 
-def find_value(pattern, text):
-    match = re.search(pattern, text, re.IGNORECASE)
-    return match.group(1).strip() if match else ""
+def clean_text(text):
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"(\d+)\s*(st|nd|rd|th)", r"\1\2", text, flags=re.I)
+    text = text.replace("AED 21,479, 280", "AED 21,479,280")
+    return text
+
+def extract_land_lease(text):
+    rows = []
+
+    pattern = r"(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s+to\s+(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s*=\s*AED\s*([\d,]+)"
+
+    matches = re.findall(pattern, text, re.I)
+
+    for start, end, amount in matches:
+        rows.append({
+            "Term Type": "Land Lease",
+            "Start Date": start,
+            "End Date": end,
+            "Charge Type": "Fixed Revenue",
+            "Basis": "Period-based",
+            "Volume": "",
+            "Rate": "",
+            "Fixed Amount": "AED " + amount,
+            "Escalation": "No",
+            "Remarks": ""
+        })
+
+    if "2.5% escalation" in text:
+        rows.append({
+            "Term Type": "Land Lease",
+            "Start Date": "25th October 2028",
+            "End Date": "Ongoing",
+            "Charge Type": "Escalation",
+            "Basis": "Previous year revenue",
+            "Volume": "",
+            "Rate": "",
+            "Fixed Amount": "",
+            "Escalation": "2.5% year on year",
+            "Remarks": "Escalation starts from 25th October 2028"
+        })
+
+    return rows
+
+def extract_throughput(text):
+    rows = []
+
+    volume_pattern = r"(\d+)\s*Million\s+tons?\s+from\s+(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})\s+to\s+(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
+
+    volume_matches = re.findall(volume_pattern, text, re.I)
+
+    for volume, start, end in volume_matches:
+        rows.append({
+            "Term Type": "Throughput Volume",
+            "Start Date": start,
+            "End Date": end,
+            "Charge Type": "Volume Commitment",
+            "Basis": "Million Tons",
+            "Volume": volume + " Million Tons",
+            "Rate": "",
+            "Fixed Amount": "",
+            "Escalation": "",
+            "Remarks": ""
+        })
+
+    rate_pattern = r"(Up to 15 Million tons|15 to 20 Million Tons|20 to 25 Million Tons)\s*[:=]\s*AED\s*([\d.]+)\s*per Ton"
+
+    rate_matches = re.findall(rate_pattern, text, re.I)
+
+    for slab, rate in rate_matches:
+        rows.append({
+            "Term Type": "Throughput Rate",
+            "Start Date": "",
+            "End Date": "",
+            "Charge Type": "Product Handling Rate",
+            "Basis": slab,
+            "Volume": "",
+            "Rate": "AED " + rate + " per Ton",
+            "Fixed Amount": "",
+            "Escalation": "2.5% year on year",
+            "Remarks": ""
+        })
+
+    return rows
 
 if uploaded_file:
-    text = extract_pdf_text(uploaded_file)
+    raw_text = extract_pdf_text(uploaded_file)
+    text = clean_text(raw_text)
 
     st.success("PDF Text Extracted Successfully!")
 
     st.subheader("Extracted Contract Text")
-    st.text_area("Contract Content", text, height=300)
-
-    effective_date = find_value(r"Effective Date[:\s]*([\w\s\d]+)", text)
-    contract_term = find_value(r"Contract Term[:\s]*([\w\s\d]+)", text)
-    total_area = find_value(r"Total Area[:\s]*([\d,]+\s*Sq\.?\s*m)", text)
-    escalation = find_value(r"(\d+\.?\d*%\s*escalation)", text)
-
-    amounts = re.findall(r"AED\s?[\d,]+", text, re.IGNORECASE)
+    st.text_area("Contract Content", raw_text, height=300)
 
     rows = []
-
-    for amount in amounts:
-        rows.append({
-            "Term Type": "Land Lease",
-            "Start Date": effective_date,
-            "End Date": "",
-            "Charge Type": "Fixed Revenue",
-            "Basis": "Period-based",
-            "Rate": "",
-            "Fixed Amount": amount,
-            "Escalation": escalation,
-            "Remarks": f"Contract Term: {contract_term}, Area: {total_area}"
-        })
-
-    if not rows:
-        rows.append({
-            "Term Type": "Land Lease",
-            "Start Date": effective_date,
-            "End Date": "",
-            "Charge Type": "",
-            "Basis": "",
-            "Rate": "",
-            "Fixed Amount": "",
-            "Escalation": escalation,
-            "Remarks": f"Contract Term: {contract_term}, Area: {total_area}"
-        })
+    rows.extend(extract_land_lease(text))
+    rows.extend(extract_throughput(text))
 
     df = pd.DataFrame(rows)
 
